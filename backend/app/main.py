@@ -4,23 +4,52 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+import os, shutil
 
 from app.core.config import settings
 from app.core.logging import logger
 from app.database import create_tables, SessionLocal
-# Import all models so SQLAlchemy registers them before create_all()
 from app.models import user, document, chat as chat_model  # noqa: F401
 
 
 def _seed_shared_user():
-    """Ensure the SHARED_USER_ID=1 row exists so FK constraints are satisfied."""
     from app.models.user import User
     db = SessionLocal()
     try:
         if not db.query(User).filter(User.id == 1).first():
             db.add(User(id=1))
             db.commit()
-            logger.info("Shared user (id=1) created")
+    finally:
+        db.close()
+
+
+def _cleanup_old_data(max_age_hours: int = 2):
+    """Delete documents and files older than max_age_hours. Runs on startup."""
+    from app.models.document import Document
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
+        old_docs = db.query(Document).filter(Document.created_at < cutoff).all()
+        for doc in old_docs:
+            try:
+                if doc.file_path and os.path.exists(doc.file_path):
+                    os.remove(doc.file_path)
+            except Exception:
+                pass
+            db.delete(doc)
+        if old_docs:
+            db.commit()
+            logger.info(f"Cleaned up {len(old_docs)} old documents")
+
+        # Clean up empty user upload dirs
+        upload_root = settings.upload_path
+        if upload_root.exists():
+            for user_dir in upload_root.iterdir():
+                if user_dir.is_dir() and not any(user_dir.iterdir()):
+                    shutil.rmtree(user_dir, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"Cleanup error: {e}")
     finally:
         db.close()
 
@@ -30,8 +59,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     create_tables()
     _seed_shared_user()
+    _cleanup_old_data()
     logger.info("Database ready")
-    #! Pre-load embedding model at startup so first upload is instant
     try:
         from app.services.embedding_service import get_embedding_model
         get_embedding_model()
