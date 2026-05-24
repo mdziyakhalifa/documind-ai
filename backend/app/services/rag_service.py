@@ -57,8 +57,8 @@ def ingest_document(
 
     logger.info(f"Split into {len(all_chunks)} chunks")
 
-    #! Step 3: Generate embeddings in batches of 64
-    batch_size = 64
+    #! Step 3: Generate embeddings in small batches to stay within 512MB RAM
+    batch_size = 8
     all_embeddings = []
     for i in range(0, len(all_chunks), batch_size):
         batch = all_chunks[i:i + batch_size]
