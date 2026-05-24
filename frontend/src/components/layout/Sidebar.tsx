@@ -4,11 +4,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useEffect, useState } from "react";
 import {
   MessageSquare, Plus, Trash2, ChevronLeft, ChevronRight,
-  BookOpen, Clock
+  BookOpen, Clock, Users
 } from "lucide-react";
 import { useChat } from "@/hooks/useChat";
 import { ChatSession } from "@/types";
 import { formatDate, truncate, cn } from "@/lib/utils";
+import { healthApi } from "@/lib/api";
 
 interface SidebarProps {
   activeView: "chat" | "documents";
@@ -17,9 +18,26 @@ interface SidebarProps {
 
 export default function Sidebar({ activeView, onViewChange }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
+  const [visitorCount, setVisitorCount] = useState<number | null>(null);
   const { sessions, activeSessionId, createSession, loadSession, deleteSession, loadSessions } = useChat();
 
   useEffect(() => { loadSessions(); }, []);
+
+  // Track visitor once per browser session, then show live count
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const tracked = sessionStorage.getItem("documind_visitor_tracked");
+    if (!tracked) {
+      sessionStorage.setItem("documind_visitor_tracked", "1");
+      healthApi.trackVisitor().then((res) => {
+        if (res?.visitors != null) setVisitorCount(res.visitors);
+      });
+    } else {
+      healthApi.getHealth().then((res) => {
+        if (res?.visitors != null) setVisitorCount(res.visitors);
+      });
+    }
+  }, []);
 
   const handleNewChat = async () => {
     onViewChange("chat");
@@ -193,22 +211,37 @@ export default function Sidebar({ activeView, onViewChange }: SidebarProps) {
 
       {/* Status */}
       <div
-        className={cn("px-4 py-4 border-t", collapsed ? "flex justify-center" : "")}
+        className={cn("px-4 py-4 border-t space-y-2", collapsed ? "flex flex-col items-center space-y-2" : "")}
         style={{ borderColor: 'hsl(20,12%,17%)' }}
       >
         {!collapsed ? (
-          <div className="flex items-center gap-2">
+          <>
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-40" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+              </span>
+              <span className="text-[11px]" style={{ color: 'hsl(36,30%,90%,0.3)' }}>Groq · Connected</span>
+            </div>
+            {visitorCount != null && (
+              <div className="flex items-center gap-2">
+                <Users className="w-3 h-3 flex-shrink-0" style={{ color: 'hsl(36,30%,90%,0.3)' }} />
+                <span className="text-[11px]" style={{ color: 'hsl(36,30%,90%,0.3)' }}>
+                  {visitorCount} visitor{visitorCount !== 1 ? "s" : ""}
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-40" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
             </span>
-            <span className="text-[11px]" style={{ color: 'hsl(36,30%,90%,0.3)' }}>Groq · Connected</span>
-          </div>
-        ) : (
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-40" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-          </span>
+            {visitorCount != null && (
+              <Users className="w-3.5 h-3.5" style={{ color: 'hsl(36,30%,90%,0.3)' }} title={`${visitorCount} visitors`} />
+            )}
+          </>
         )}
       </div>
     </motion.aside>
