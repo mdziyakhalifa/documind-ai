@@ -1,0 +1,103 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Lora:ital@1&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Main palette — warm cream */
+    --background: 36 38% 96%;       /* #F7F2EB */
+    --foreground: 20 20% 10%;       /* #1C1712 */
+    --card: 0 0% 100%;
+    --card-foreground: 20 20% 10%;
+
+    /* Sidebar — dark warm */
+    --sidebar: 20 18% 11%;          /* #1E1914 */
+    --sidebar-foreground: 36 30% 90%;
+    --sidebar-muted: 20 12% 20%;    /* hover/selected */
+    --sidebar-border: 20 12% 17%;
+
+    /* Interactive */
+    --primary: 20 20% 10%;
+    --primary-foreground: 36 38% 96%;
+    --secondary: 34 22% 91%;        /* #EDE5DA */
+    --secondary-foreground: 20 20% 10%;
+    --muted: 34 18% 92%;
+    --muted-foreground: 24 8% 50%;  /* #8A7F76 */
+
+    /* Warm caramel accent */
+    --warm: 28 52% 50%;             /* #BB7B3A */
+    --warm-foreground: 0 0% 100%;
+
+    --accent: 34 22% 91%;
+    --accent-foreground: 20 20% 10%;
+    --border: 32 18% 86%;           /* #DDD5C8 */
+    --input: 32 18% 86%;
+    --ring: 28 52% 50%;
+    --radius: 0.625rem;
+  }
+}
+
+/* Direct sidebar styles — bypasses Tailwind custom token resolution issues */
+.sidebar-panel {
+  background-color: hsl(20, 18%, 11%);
+  border-right-color: hsl(20, 12%, 17%);
+}
+.sidebar-panel .sb-text { color: hsl(36, 30%, 90%); }
+.sidebar-panel .sb-muted { color: hsl(36, 30%, 90% / 0.35); }
+.sidebar-panel .sb-hover:hover { background-color: hsl(20, 12%, 20%); }
+.sidebar-panel .sb-active { background-color: hsl(20, 12%, 20%); }
+.sidebar-panel .sb-border { border-color: hsl(20, 12%, 17%); }
+.sidebar-panel .sb-new-btn {
+  background-color: hsl(36, 30%, 90% / 0.1);
+  border-color: hsl(20, 12%, 17%);
+  color: hsl(36, 30%, 90%);
+}
+.sidebar-panel .sb-new-btn:hover {
+  background-color: hsl(36, 30%, 90% / 0.16);
+}
+
+@layer base {
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: hsl(var(--muted-foreground) / 0.35); }
+}
+
+/* Prose styling for markdown messages */
+.prose-chat {
+  @apply text-foreground leading-7;
+}
+.prose-chat > * + * { @apply mt-3; }
+.prose-chat h1, .prose-chat h2, .prose-chat h3 {
+  @apply font-semibold text-foreground mt-5 mb-2 leading-snug;
+}
+.prose-chat p { @apply mb-0; }
+.prose-chat ul { @apply list-disc list-inside space-y-1; }
+.prose-chat ol { @apply list-decimal list-inside space-y-1; }
+.prose-chat li { @apply text-foreground/90; }
+.prose-chat code {
+  @apply bg-secondary text-foreground/80 px-1.5 py-0.5 rounded-md text-[13px] font-mono;
+}
+.prose-chat pre {
+  @apply bg-[#1C1712] rounded-xl p-4 overflow-x-auto border border-border/20;
+}
+.prose-chat pre code {
+  @apply bg-transparent p-0 text-zinc-200;
+}
+.prose-chat blockquote {
+  @apply border-l-2 pl-4 italic text-muted-foreground;
+  border-color: hsl(var(--warm) / 0.5);
+}
+.prose-chat strong { @apply font-semibold text-foreground; }
+.prose-chat a { @apply underline underline-offset-2; color: hsl(var(--warm)); }
+.prose-chat table { @apply w-full border-collapse; }
+.prose-chat th { @apply border border-border px-3 py-2 text-left font-medium text-sm bg-secondary; }
+.prose-chat td { @apply border border-border px-3 py-2 text-sm; }
