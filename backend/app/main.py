@@ -31,7 +31,13 @@ async def lifespan(app: FastAPI):
     create_tables()
     _seed_shared_user()
     logger.info("Database ready")
-    #! Embedding model loads on first upload request (lazy) to save RAM on free tier
+    #! Pre-load embedding model at startup so first upload is instant
+    try:
+        from app.services.embedding_service import get_embedding_model
+        get_embedding_model()
+        logger.info("Embedding model ready")
+    except Exception as e:
+        logger.warning(f"Could not pre-load embedding model: {e}")
     yield
     logger.info("Shutting down")
 
