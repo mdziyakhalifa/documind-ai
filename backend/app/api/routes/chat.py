@@ -1,10 +1,11 @@
-#! Chat routes: sessions, history, and SSE streaming — no authentication required
+#! Chat routes: sessions, history, SSE streaming — session-isolated, no auth required
 
 import json
-from fastapi import APIRouter, Depends, HTTPException
+import hashlib
+from fastapi import APIRouter, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.database import get_db
 from app.models.chat import ChatSession, ChatMessage
@@ -17,12 +18,16 @@ from app.core.logging import logger
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
-SHARED_USER_ID = 1  #! No auth — single shared user
+
+def get_user_id(x_session_id: Optional[str] = Header(default="shared")) -> int:
+    """Convert session ID string to a stable integer for per-visitor isolation."""
+    h = hashlib.md5((x_session_id or "shared").encode()).digest()
+    return int.from_bytes(h[:4], "big") % 900000 + 1
 
 
 @router.post("/sessions", response_model=ChatSessionResponse, status_code=201)
-def create_session(data: ChatSessionCreate, db: Session = Depends(get_db)):
-    session = ChatSession(user_id=SHARED_USER_ID, title=data.title or "New Chat")
+def create_session(data: ChatSessionCreate, db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
+    session = ChatSession(user_id=user_id, title=data.title or "New Chat")
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -30,10 +35,10 @@ def create_session(data: ChatSessionCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/sessions", response_model=List[ChatSessionResponse])
-def list_sessions(db: Session = Depends(get_db)):
+def list_sessions(db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
     return (
         db.query(ChatSession)
-        .filter(ChatSession.user_id == SHARED_USER_ID)
+        .filter(ChatSession.user_id == user_id)
         .order_by(ChatSession.created_at.desc())
         .limit(50)
         .all()
@@ -41,8 +46,10 @@ def list_sessions(db: Session = Depends(get_db)):
 
 
 @router.get("/sessions/{session_id}", response_model=ChatHistoryResponse)
-def get_session(session_id: int, db: Session = Depends(get_db)):
-    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+def get_session(session_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id, ChatSession.user_id == user_id
+    ).first()
     if not session:
         raise HTTPException(404, "Session not found")
     messages = (
@@ -55,8 +62,10 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-def delete_session(session_id: int, db: Session = Depends(get_db)):
-    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+def delete_session(session_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id, ChatSession.user_id == user_id
+    ).first()
     if not session:
         raise HTTPException(404, "Session not found")
     db.delete(session)
@@ -64,8 +73,10 @@ def delete_session(session_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/sessions/{session_id}", response_model=ChatSessionResponse)
-def rename_session(session_id: int, data: ChatSessionCreate, db: Session = Depends(get_db)):
-    session = db.query(ChatSession).filter(ChatSession.id == session_id).first()
+def rename_session(session_id: int, data: ChatSessionCreate, db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
+    session = db.query(ChatSession).filter(
+        ChatSession.id == session_id, ChatSession.user_id == user_id
+    ).first()
     if not session:
         raise HTTPException(404, "Session not found")
     session.title = data.title
@@ -75,28 +86,21 @@ def rename_session(session_id: int, data: ChatSessionCreate, db: Session = Depen
 
 
 @router.post("/stream")
-async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
-    """
-    Main streaming chat endpoint — Server-Sent Events.
-    Events: 'sources', 'token', 'done', 'error'
-    """
-    session = db.query(ChatSession).filter(ChatSession.id == request.session_id).first()
+async def chat_stream(request: ChatRequest, db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
+    session = db.query(ChatSession).filter(
+        ChatSession.id == request.session_id, ChatSession.user_id == user_id
+    ).first()
     if not session:
         raise HTTPException(404, "Chat session not found")
 
-    #! Save user message
-    user_msg = ChatMessage(
-        session_id=request.session_id, role="user", content=request.message
-    )
+    user_msg = ChatMessage(session_id=request.session_id, role="user", content=request.message)
     db.add(user_msg)
     db.commit()
 
-    #! Auto-title on first message
     if session.title == "New Chat":
         session.title = request.message[:60]
         db.commit()
 
-    #! Load recent history for LLM memory
     history = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == request.session_id)
@@ -113,12 +117,11 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
 
         try:
             async for token, sources in query_rag(
-                user_id=SHARED_USER_ID,
+                user_id=user_id,
                 query=request.message,
                 chat_history=chat_history,
                 document_ids=request.document_ids,
             ):
-                #! Emit sources once with the first chunk
                 if not sources_sent:
                     final_sources = sources
                     if sources:
@@ -143,7 +146,6 @@ async def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
             yield f"event: error\ndata: {json.dumps(str(e))}\n\n"
             return
 
-        #! Persist the complete assistant message
         complete = "".join(full_response)
         sources_db = [
             {
