@@ -1,13 +1,32 @@
-// ─── Axios API client with base URL from env ─────────────────────────────────
+// ─── Axios API client with session isolation ──────────────────────────────────
 
 import axios from "axios";
-import { Document, ChatSession, ChatHistory, ChatMessage } from "@/types";
+import { Document, ChatSession, ChatHistory } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// Each visitor gets a unique session ID stored in localStorage
+// This isolates their documents and chats from other visitors
+function getSessionId(): string {
+  if (typeof window === "undefined") return "ssr";
+  let id = localStorage.getItem("documind_session");
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem("documind_session", id);
+  }
+  return id;
+}
 
 export const api = axios.create({
   baseURL: `${API_URL}/api`,
   headers: { "Content-Type": "application/json" },
+});
+
+// Attach session ID to every request automatically
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+api.interceptors.request.use((config: any) => {
+  config.headers["X-Session-ID"] = getSessionId();
+  return config;
 });
 
 // ─── Documents ────────────────────────────────────────────────────────────────
@@ -20,7 +39,8 @@ export const documentsApi = {
     form.append("file", file);
     return api.post<Document>("/documents/upload", form, {
       headers: { "Content-Type": "multipart/form-data" },
-      onUploadProgress: (e) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onUploadProgress: (e: any) => {
         if (onProgress && e.total) onProgress(Math.round((e.loaded * 100) / e.total));
       },
     });
@@ -46,8 +66,22 @@ export const chatApi = {
   renameSession: (id: number, title: string) =>
     api.patch<ChatSession>(`/chat/sessions/${id}`, { title }),
 
-  // Returns the raw SSE URL — consumed by useChat hook with EventSource/fetch
   streamUrl: () => `${API_URL}/api/chat/stream`,
+};
+
+// ─── Visitor / Health ─────────────────────────────────────────────────────────
+
+export const healthApi = {
+  /** Call once per new browser session to increment the visitor counter. */
+  trackVisitor: () =>
+    fetch(`${API_URL}/visitor`, { method: "POST" })
+      .then((r) => r.json())
+      .catch(() => null),
+
+  getHealth: () =>
+    fetch(`${API_URL}/health`)
+      .then((r) => r.json())
+      .catch(() => null),
 };
 
 // ─── Streaming helper ─────────────────────────────────────────────────────────
@@ -59,7 +93,10 @@ export async function* streamChat(
 ): AsyncGenerator<{ event: string; data: string }> {
   const response = await fetch(`${API_URL}/api/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Session-ID": getSessionId(),   // include session ID in SSE stream too
+    },
     body: JSON.stringify({
       session_id: sessionId,
       message,
