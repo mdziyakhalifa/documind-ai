@@ -1,12 +1,13 @@
-#! Document routes: upload, list, delete — no authentication required
+#! Document routes: upload, list, delete — session-isolated, no authentication required
 
 import os
 import uuid
+import hashlib
 from pathlib import Path
-from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks, Header
 from sqlalchemy.orm import Session
 from fastapi import Depends
-from typing import List
+from typing import List, Optional
 
 from app.database import get_db
 from app.models.document import Document, DocumentStatus
@@ -17,15 +18,17 @@ from app.core.logging import logger
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
-#! Single shared user ID since there's no authentication
-SHARED_USER_ID = 1
+
+def get_user_id(x_session_id: Optional[str] = Header(default="shared")) -> int:
+    """Convert session ID string to a stable integer for per-visitor isolation."""
+    h = hashlib.md5((x_session_id or "shared").encode()).digest()
+    return int.from_bytes(h[:4], "big") % 900000 + 1
 
 
 def _ingest_in_background(
     document_id: int, file_path: str, file_type: str,
-    filename: str, db_url: str
+    filename: str, db_url: str, user_id: int
 ):
-    """Background ingestion task — updates document status when done."""
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     engine = create_engine(db_url, connect_args={"check_same_thread": False})
@@ -34,7 +37,7 @@ def _ingest_in_background(
 
     doc = bg_db.query(Document).filter(Document.id == document_id).first()
     try:
-        chunk_count = ingest_document(SHARED_USER_ID, document_id, file_path, file_type, filename)
+        chunk_count = ingest_document(user_id, document_id, file_path, file_type, filename)
         if doc:
             doc.status = DocumentStatus.READY
             doc.chunk_count = chunk_count
@@ -55,23 +58,17 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_user_id),
 ):
-    """Upload a file and kick off background RAG ingestion."""
-    #! Validate extension
     suffix = Path(file.filename).suffix.lower()
     if suffix not in settings.ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            400,
-            f"Unsupported type '{suffix}'. Allowed: {', '.join(settings.ALLOWED_EXTENSIONS)}"
-        )
+        raise HTTPException(400, f"Unsupported type '{suffix}'.")
 
-    #! Check size
     content = await file.read()
     if len(content) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
         raise HTTPException(413, f"File exceeds {settings.MAX_FILE_SIZE_MB}MB limit")
 
-    #! Save to disk
-    user_dir = settings.upload_path / str(SHARED_USER_ID)
+    user_dir = settings.upload_path / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
     unique_name = f"{uuid.uuid4().hex}{suffix}"
     file_path = user_dir / unique_name
@@ -79,9 +76,8 @@ async def upload_document(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    #! Record in DB
     doc = Document(
-        user_id=SHARED_USER_ID,
+        user_id=user_id,
         filename=unique_name,
         original_filename=file.filename,
         file_type=suffix.lstrip("."),
@@ -96,37 +92,37 @@ async def upload_document(
     background_tasks.add_task(
         _ingest_in_background,
         doc.id, str(file_path), suffix.lstrip("."),
-        file.filename, settings.DATABASE_URL,
+        file.filename, settings.DATABASE_URL, user_id,
     )
 
     return doc
 
 
 @router.get("/", response_model=DocumentListResponse)
-def list_documents(db: Session = Depends(get_db)):
-    """Return all documents."""
-    docs = db.query(Document).order_by(Document.created_at.desc()).all()
+def list_documents(db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
+    docs = db.query(Document).filter(
+        Document.user_id == user_id
+    ).order_by(Document.created_at.desc()).all()
     return DocumentListResponse(documents=docs, total=len(docs))
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)
-def get_document(document_id: int, db: Session = Depends(get_db)):
-    doc = db.query(Document).filter(Document.id == document_id).first()
+def get_document(document_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == user_id).first()
     if not doc:
         raise HTTPException(404, "Document not found")
     return doc
 
 
 @router.delete("/{document_id}", status_code=204)
-def delete_document(document_id: int, db: Session = Depends(get_db)):
-    """Delete document from DB, disk, and FAISS index."""
-    doc = db.query(Document).filter(Document.id == document_id).first()
+def delete_document(document_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_user_id)):
+    doc = db.query(Document).filter(Document.id == document_id, Document.user_id == user_id).first()
     if not doc:
         raise HTTPException(404, "Document not found")
 
     if os.path.exists(doc.file_path):
         os.remove(doc.file_path)
 
-    delete_document_from_index(SHARED_USER_ID, document_id)
+    delete_document_from_index(user_id, document_id)
     db.delete(doc)
     db.commit()
